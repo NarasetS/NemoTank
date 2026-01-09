@@ -203,3 +203,8 @@ else:
                     
                     st.write(f"**{label}**")
                     for f in feat_keys: st.write(f"{f}: {s[f]:.2f}")
+                    
+                    # Ticker List Display
+                    with st.expander("View Tickers"):
+                        tickers_in_cluster = clustered[clustered['cluster_id'] == i]['ticker'].tolist()
+                        st.write(", ".join(tickers_in_cluster))
