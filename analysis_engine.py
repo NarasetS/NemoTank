@@ -7,7 +7,8 @@ from sklearn.preprocessing import StandardScaler
 
 class IntelligenceEngine:
     """
-    Global Intelligence layer. Switches between US and Thai market data.
+    Global Intelligence layer. 
+    Includes Shark Tank Logic for High-Growth/High-Margin discovery.
     """
     def __init__(self, data_dir="market_data"):
         self.data_dir = data_dir
@@ -30,6 +31,12 @@ class IntelligenceEngine:
         df['debt_ebitda'] = df['total_debt'] / df['ebitda'].replace(0, np.nan)
         df['peg_ratio'] = df['forward_pe'] / df['conventional_roic'].replace(0, np.nan)
         
+        # Convert Shark Metrics to Percentage
+        shark_cols = ['revenue_growth', 'gross_margins', 'operating_margins', 'return_on_equity']
+        for col in shark_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0) * 100
+        
         # Unified Alpha (Z-Score Ensemble)
         z_df = df.copy()
         z_df['inv_peg'] = 1 / z_df['peg_ratio'].replace(0, np.nan)
@@ -48,6 +55,16 @@ class IntelligenceEngine:
 
     def get_buffett_leads(self, df, roic_threshold=15, debt_limit=2.5):
         return df[(df['conventional_roic'] >= roic_threshold) & (df['debt_ebitda'] <= debt_limit)].sort_values('conventional_roic', ascending=False)
+
+    def get_shark_tank_leads(self, df, min_growth=15, min_gross_margin=30, min_roe=15):
+        """
+        Shark Tank Logic: High Growth, Scalability (Margins), and Efficient Equity Use.
+        """
+        return df[
+            (df['revenue_growth'] >= min_growth) &
+            (df['gross_margins'] >= min_gross_margin) &
+            (df['return_on_equity'] >= min_roe)
+        ].sort_values('revenue_growth', ascending=False)
 
     def find_optimal_k(self, data, max_k=8):
         inertias = []

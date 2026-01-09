@@ -14,10 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class GlobalFundamentalPipeline:
+class GlobalFundamentalPipeline: 
     """
     Acquires high-fidelity data for US and Thailand (SET) markets.
-    Features: Flexible index scraping, DR filtering, and manual fundamental calculations.
+    Features: Flexible index scraping, DR filtering, and Shark Tank metrics.
     """
     def __init__(self, storage_dir="market_data", batch_size=5, delay=3.0):
         self.storage_dir = storage_dir
@@ -62,37 +62,27 @@ class GlobalFundamentalPipeline:
                 for url in urls:
                     try:
                         response = requests.get(url, headers=headers)
-                        # Skip if 404 or other error
                         if response.status_code != 200:
                             logger.warning(f"Skipping {url}: Status {response.status_code}")
                             continue
                             
-                        # Use lxml to avoid html5lib dependency errors
                         tables = pd.read_html(StringIO(response.text), flavor='lxml')
                         
                         for t in tables:
-                            # Search for ticker columns with various headers
                             symbol_col = next((c for c in t.columns if any(k in str(c).lower() for k in ['symbol', 'ticker', 'code'])), None)
                             
                             if symbol_col:
-                                # Clean and format: Ensure .BK suffix and remove garbage
                                 raw_symbols = t[symbol_col].dropna().astype(str).tolist()
                                 for sym in raw_symbols:
                                     clean_sym = sym.strip().upper()
-                                    # Basic validation: 2-10 chars, not just digits, must contain at least 1 letter
                                     if 2 <= len(clean_sym) <= 10 and not clean_sym.isdigit() and any(c.isalpha() for c in clean_sym):
                                         all_set_tickers.append(f"{clean_sym}.BK")
                                         
                     except Exception as e:
                         logger.warning(f"Failed to scrape {url}: {e}")
 
-                # Filter out DRs (Depositary Receipts)
-                # DRs often look like: BABA80.BK, TENCENT80.BK (Letters + 2 digits)
-                # Valid stocks can have digits (S11.BK, 2S.BK), so we use a specific regex.
-                # Regex: Starts with letters, ends with exactly 2 digits before .BK
+                # Filter out DRs
                 regex_dr = re.compile(r'^[A-Z]+\d{2}\.BK$')
-                
-                # Deduplicate and Apply Filter
                 unique_tickers = list(set([t for t in all_set_tickers if not t.startswith('TICKER')]))
                 self.tickers = [t for t in unique_tickers if not regex_dr.match(t)]
                 
@@ -134,8 +124,6 @@ class GlobalFundamentalPipeline:
             stock = yf.Ticker(ticker)
             info = stock.info
             
-            # DR Safety Check (Double-check metadata)
-            # Exclude if name explicitly says 'Depositary Receipt'
             long_name = info.get('longName', '').upper()
             if 'DEPOSITARY RECEIPT' in long_name:
                 return None
@@ -152,7 +140,6 @@ class GlobalFundamentalPipeline:
                 'nwc': nwc,
                 'nfa': nfa,
                 'total_assets': total_assets,
-                # Explicitly fetching Market Cap alongside EV
                 'market_cap': info.get('marketCap'), 
                 'enterprise_value': info.get('enterpriseValue'),
                 'net_income': info.get('netIncomeToCommon'),
@@ -160,6 +147,14 @@ class GlobalFundamentalPipeline:
                 'total_debt': info.get('totalDebt'),
                 'ebitda': info.get('ebitda'),
                 'forward_pe': info.get('forwardPE'),
+                
+                # --- SHARK TANK METRICS ---
+                'revenue': info.get('totalRevenue'),
+                'revenue_growth': info.get('revenueGrowth'), # Year-over-Year Growth
+                'gross_margins': info.get('grossMargins'),
+                'operating_margins': info.get('operatingMargins'),
+                'return_on_equity': info.get('returnOnEquity'),
+                
                 'currency': info.get('currency', 'USD'),
                 'scan_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
