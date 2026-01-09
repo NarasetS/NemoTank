@@ -29,52 +29,73 @@ class GlobalFundamentalPipeline:
             os.makedirs(self.storage_dir)
 
     def discover_tickers(self, market='US'):
-        """Scrapes tickers for the selected market with robust fallbacks."""
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        """Scrapes tickers for the selected market with robust tiered fallbacks."""
+        # Generic headers for general web scraping
+        browser_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        
+        # SEC-specific headers (Requires contact info to avoid 403 Forbidden)
+        sec_headers = {"User-Agent": "NemoTankApp/1.0 (educational_research@example.com)"}
         
         try:
             if market == 'US':
-                logger.info("Fetching complete US market list from Nasdaq Trader...")
+                logger.info("Fetching complete US market list...")
+                
+                # --- STRATEGY 1: Nasdaq Trader (Most comprehensive: NYSE, NASDAQ, AMEX) ---
                 try:
-                    # Nasdaq Trader provides a text file with all traded symbols on Nasdaq, NYSE, AMEX
+                    logger.info("Attempting Source 1: Nasdaq Trader...")
                     url = "http://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt"
-                    df = pd.read_csv(url, sep='|')
+                    # Use requests with timeout to avoid hanging (WinError 10060)
+                    r = requests.get(url, headers=browser_headers, timeout=15)
+                    r.raise_for_status()
                     
-                    # 1. Clean Data: Remove file footer
-                    if len(df) > 0:
-                        # The last row often contains file creation timestamp info
-                        df = df[:-1]
-                        
-                    # 2. Filter: Real companies only
-                    # Exclude Test Issues
-                    df = df[df['Test Issue'] == 'N']
-                    # Exclude ETFs (We want operating companies for Greenblatt/Buffett analysis)
+                    df = pd.read_csv(StringIO(r.text), sep='|')
+                    
+                    # Clean Data
+                    if len(df) > 0: df = df[:-1] # Remove file footer
+                    df = df[df['Test Issue'] == 'N'] # Filter test stocks
                     if 'ETF' in df.columns:
-                        df = df[df['ETF'] == 'N']
+                        df = df[df['ETF'] == 'N'] # Filter ETFs if column exists
                         
-                    # 3. Format Symbols for yfinance
-                    # Nasdaq file uses 'BRK.B', yfinance needs 'BRK-B'
                     raw_tickers = df['Symbol'].tolist()
                     self.tickers = list(set([str(t).replace('.', '-') for t in raw_tickers]))
+                    logger.info(f"Discovered {len(self.tickers)} US Tickers via Nasdaq Trader.")
+                    return 
+
+                except Exception as e:
+                    logger.warning(f"Nasdaq Trader failed: {e}. Moving to Source 2...")
+
+                # --- STRATEGY 2: SEC Official List (Very reliable fallback) ---
+                try:
+                    logger.info("Attempting Source 2: SEC.gov...")
+                    url = "https://www.sec.gov/files/company_tickers.json"
+                    r = requests.get(url, headers=sec_headers, timeout=15)
+                    r.raise_for_status()
                     
-                    logger.info(f"Discovered {len(self.tickers)} US Tickers (NYSE, NASDAQ, AMEX).")
+                    # SEC returns a dict of dicts: {0: {'ticker': 'AAPL', ...}, 1: ...}
+                    data = r.json()
+                    sec_tickers = [val['ticker'] for val in data.values()]
                     
-                except Exception as nas_e:
-                    logger.warning(f"Nasdaq Trader source failed: {nas_e}. Falling back to S&P 500 + Nasdaq 100.")
-                    # Fallback to S&P 500 + Nasdaq 100 if FTP fails
-                    url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                    sp500 = pd.read_html(StringIO(requests.get(url_sp, headers=headers).text), flavor='lxml')[0]
-                    
-                    url_nas = "https://en.wikipedia.org/wiki/Nasdaq-100#Components"
-                    nas100 = pd.read_html(StringIO(requests.get(url_nas, headers=headers).text), flavor='lxml')[4]
-                    
-                    raw_tickers = sp500['Symbol'].tolist() + nas100['Ticker'].tolist()
-                    self.tickers = list(set([t.replace('.', '-') for t in raw_tickers]))
-                    logger.info(f"Discovered {len(self.tickers)} US Tickers (Fallback Mode).")
+                    self.tickers = list(set([str(t).replace('.', '-') for t in sec_tickers]))
+                    logger.info(f"Discovered {len(self.tickers)} US Tickers via SEC.")
+                    return
+
+                except Exception as e:
+                    logger.warning(f"SEC source failed: {e}. Moving to Source 3...")
+
+                # --- STRATEGY 3: Wikipedia Indices (Final Fallback) ---
+                logger.info("Attempting Source 3: S&P 500 + Nasdaq 100 Fallback...")
+                url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+                sp500 = pd.read_html(StringIO(requests.get(url_sp, headers=browser_headers).text), flavor='lxml')[0]
+                
+                url_nas = "https://en.wikipedia.org/wiki/Nasdaq-100#Components"
+                nas100 = pd.read_html(StringIO(requests.get(url_nas, headers=browser_headers).text), flavor='lxml')[4]
+                
+                raw_tickers = sp500['Symbol'].tolist() + nas100['Ticker'].tolist()
+                self.tickers = list(set([t.replace('.', '-') for t in raw_tickers]))
+                logger.info(f"Discovered {len(self.tickers)} US Tickers via Indices.")
                 
             elif market == 'SET':
                 # Primary Source: StockAnalysis.com (Complete SET List)
-                # Backup Sources: Wikipedia General List + SET Indices
                 urls = [
                     "https://stockanalysis.com/list/stock-exchange-of-thailand/",
                     "https://en.wikipedia.org/wiki/List_of_companies_of_Thailand",
@@ -84,43 +105,30 @@ class GlobalFundamentalPipeline:
                 all_set_tickers = []
                 for url in urls:
                     try:
-                        response = requests.get(url, headers=headers)
-                        # Skip if 404 or other error
-                        if response.status_code != 200:
-                            logger.warning(f"Skipping {url}: Status {response.status_code}")
-                            continue
+                        response = requests.get(url, headers=browser_headers, timeout=15)
+                        if response.status_code != 200: continue
                             
-                        # Use lxml to avoid html5lib dependency errors
                         tables = pd.read_html(StringIO(response.text), flavor='lxml')
-                        
                         for t in tables:
-                            # Search for ticker columns with various headers
                             symbol_col = next((c for c in t.columns if any(k in str(c).lower() for k in ['symbol', 'ticker', 'code'])), None)
-                            
                             if symbol_col:
-                                # Clean and format: Ensure .BK suffix and remove garbage
                                 raw_symbols = t[symbol_col].dropna().astype(str).tolist()
                                 for sym in raw_symbols:
                                     clean_sym = sym.strip().upper()
-                                    # Basic validation: 2-10 chars, not just digits, must contain at least 1 letter
                                     if 2 <= len(clean_sym) <= 10 and not clean_sym.isdigit() and any(c.isalpha() for c in clean_sym):
                                         all_set_tickers.append(f"{clean_sym}.BK")
-                                        
-                    except Exception as e:
-                        logger.warning(f"Failed to scrape {url}: {e}")
+                    except Exception:
+                        continue
 
-                # Filter out DRs (Depositary Receipts)
-                # DRs often look like: BABA80.BK, TENCENT80.BK (Letters + 2 digits)
+                # Filter out DRs
                 regex_dr = re.compile(r'^[A-Z]+\d{2}\.BK$')
-                
-                # Deduplicate and Apply Filter
                 unique_tickers = list(set([t for t in all_set_tickers if not t.startswith('TICKER')]))
                 self.tickers = [t for t in unique_tickers if not regex_dr.match(t)]
                 
                 if self.tickers:
-                    logger.info(f"Discovered {len(self.tickers)} Thai Tickers (Aggregated Sources).")
+                    logger.info(f"Discovered {len(self.tickers)} Thai Tickers.")
                 else:
-                    raise ValueError("Could not find any tables with ticker symbols for the Thai market.")
+                    raise ValueError("Could not find Thai tickers.")
 
         except Exception as e:
             logger.error(f"Discovery failed for {market}: {e}")
@@ -134,14 +142,12 @@ class GlobalFundamentalPipeline:
             
             latest_inc, latest_bal = inc.iloc[:, 0], bal.iloc[:, 0]
             
-            # EBIT Calculation
             ebit = latest_inc.get('EBIT')
             if pd.isna(ebit):
                 ebit = (latest_inc.get('Net Income', 0) + 
                         latest_inc.get('Interest Expense', 0) + 
                         latest_inc.get('Tax Provision', 0))
             
-            # ROC Components
             nwc = latest_bal.get('Total Current Assets', 0) - latest_bal.get('Total Current Liabilities', 0)
             nfa = latest_bal.get('Net PPE', latest_bal.get('Properties', 0))
             total_assets = latest_bal.get('Total Assets', 0)
@@ -155,10 +161,8 @@ class GlobalFundamentalPipeline:
             stock = yf.Ticker(ticker)
             info = stock.info
             
-            # DR Safety Check (Double-check metadata)
             long_name = info.get('longName', '').upper()
-            if 'DEPOSITARY RECEIPT' in long_name:
-                return None
+            if 'DEPOSITARY RECEIPT' in long_name: return None
 
             ebit, nwc, nfa, total_assets = self._get_financial_components(stock)
             if ebit is None: return None
@@ -179,14 +183,11 @@ class GlobalFundamentalPipeline:
                 'total_debt': info.get('totalDebt'),
                 'ebitda': info.get('ebitda'),
                 'forward_pe': info.get('forwardPE'),
-                
-                # --- SHARK TANK METRICS ---
                 'revenue': info.get('totalRevenue'),
-                'revenue_growth': info.get('revenueGrowth'), # Year-over-Year Growth
+                'revenue_growth': info.get('revenueGrowth'),
                 'gross_margins': info.get('grossMargins'),
                 'operating_margins': info.get('operatingMargins'),
                 'return_on_equity': info.get('returnOnEquity'),
-                
                 'currency': info.get('currency', 'USD'),
                 'scan_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -213,9 +214,9 @@ if __name__ == "__main__":
     pipeline = GlobalFundamentalPipeline()
     
     # Run SET
-    pipeline.discover_tickers(market='SET')
-    if pipeline.tickers:
-        pipeline.run_acquisition(market_label='SET')
+    # pipeline.discover_tickers(market='SET')
+    # if pipeline.tickers:
+    #     pipeline.run_acquisition(market_label='SET')
     
     # Run US (Full Market)
     pipeline.discover_tickers(market='US')
