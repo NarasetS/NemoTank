@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class GlobalFundamentalPipeline: 
+class GlobalFundamentalPipeline:
     """
     Acquires high-fidelity data for US and Thailand (SET) markets.
     Features: Flexible index scraping, DR filtering, and Shark Tank metrics.
@@ -29,25 +29,48 @@ class GlobalFundamentalPipeline:
             os.makedirs(self.storage_dir)
 
     def discover_tickers(self, market='US'):
-        """Scrapes tickers for the selected market with flexible column detection."""
+        """Scrapes tickers for the selected market with robust fallbacks."""
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
         
         try:
             if market == 'US':
-                # Scrape S&P 500
-                url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                resp = requests.get(url, headers=headers)
-                sp500 = pd.read_html(StringIO(resp.text), flavor='lxml')[0]
-                
-                # Scrape Nasdaq 100 for broader US coverage
-                nas_url = "https://en.wikipedia.org/wiki/Nasdaq-100#Components"
-                nas_resp = requests.get(nas_url, headers=headers)
-                nas100 = pd.read_html(StringIO(nas_resp.text), flavor='lxml')[4] # Usually index 4
-                
-                # Combine and clean
-                raw_tickers = sp500['Symbol'].tolist() + nas100['Ticker'].tolist()
-                self.tickers = list(set([t.replace('.', '-') for t in raw_tickers]))
-                logger.info(f"Discovered {len(self.tickers)} US Tickers (S&P 500 + Nasdaq 100).")
+                logger.info("Fetching complete US market list from Nasdaq Trader...")
+                try:
+                    # Nasdaq Trader provides a text file with all traded symbols on Nasdaq, NYSE, AMEX
+                    url = "http://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt"
+                    df = pd.read_csv(url, sep='|')
+                    
+                    # 1. Clean Data: Remove file footer
+                    if len(df) > 0:
+                        # The last row often contains file creation timestamp info
+                        df = df[:-1]
+                        
+                    # 2. Filter: Real companies only
+                    # Exclude Test Issues
+                    df = df[df['Test Issue'] == 'N']
+                    # Exclude ETFs (We want operating companies for Greenblatt/Buffett analysis)
+                    if 'ETF' in df.columns:
+                        df = df[df['ETF'] == 'N']
+                        
+                    # 3. Format Symbols for yfinance
+                    # Nasdaq file uses 'BRK.B', yfinance needs 'BRK-B'
+                    raw_tickers = df['Symbol'].tolist()
+                    self.tickers = list(set([str(t).replace('.', '-') for t in raw_tickers]))
+                    
+                    logger.info(f"Discovered {len(self.tickers)} US Tickers (NYSE, NASDAQ, AMEX).")
+                    
+                except Exception as nas_e:
+                    logger.warning(f"Nasdaq Trader source failed: {nas_e}. Falling back to S&P 500 + Nasdaq 100.")
+                    # Fallback to S&P 500 + Nasdaq 100 if FTP fails
+                    url_sp = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+                    sp500 = pd.read_html(StringIO(requests.get(url_sp, headers=headers).text), flavor='lxml')[0]
+                    
+                    url_nas = "https://en.wikipedia.org/wiki/Nasdaq-100#Components"
+                    nas100 = pd.read_html(StringIO(requests.get(url_nas, headers=headers).text), flavor='lxml')[4]
+                    
+                    raw_tickers = sp500['Symbol'].tolist() + nas100['Ticker'].tolist()
+                    self.tickers = list(set([t.replace('.', '-') for t in raw_tickers]))
+                    logger.info(f"Discovered {len(self.tickers)} US Tickers (Fallback Mode).")
                 
             elif market == 'SET':
                 # Primary Source: StockAnalysis.com (Complete SET List)
@@ -62,27 +85,35 @@ class GlobalFundamentalPipeline:
                 for url in urls:
                     try:
                         response = requests.get(url, headers=headers)
+                        # Skip if 404 or other error
                         if response.status_code != 200:
                             logger.warning(f"Skipping {url}: Status {response.status_code}")
                             continue
                             
+                        # Use lxml to avoid html5lib dependency errors
                         tables = pd.read_html(StringIO(response.text), flavor='lxml')
                         
                         for t in tables:
+                            # Search for ticker columns with various headers
                             symbol_col = next((c for c in t.columns if any(k in str(c).lower() for k in ['symbol', 'ticker', 'code'])), None)
                             
                             if symbol_col:
+                                # Clean and format: Ensure .BK suffix and remove garbage
                                 raw_symbols = t[symbol_col].dropna().astype(str).tolist()
                                 for sym in raw_symbols:
                                     clean_sym = sym.strip().upper()
+                                    # Basic validation: 2-10 chars, not just digits, must contain at least 1 letter
                                     if 2 <= len(clean_sym) <= 10 and not clean_sym.isdigit() and any(c.isalpha() for c in clean_sym):
                                         all_set_tickers.append(f"{clean_sym}.BK")
                                         
                     except Exception as e:
                         logger.warning(f"Failed to scrape {url}: {e}")
 
-                # Filter out DRs
+                # Filter out DRs (Depositary Receipts)
+                # DRs often look like: BABA80.BK, TENCENT80.BK (Letters + 2 digits)
                 regex_dr = re.compile(r'^[A-Z]+\d{2}\.BK$')
+                
+                # Deduplicate and Apply Filter
                 unique_tickers = list(set([t for t in all_set_tickers if not t.startswith('TICKER')]))
                 self.tickers = [t for t in unique_tickers if not regex_dr.match(t)]
                 
@@ -124,6 +155,7 @@ class GlobalFundamentalPipeline:
             stock = yf.Ticker(ticker)
             info = stock.info
             
+            # DR Safety Check (Double-check metadata)
             long_name = info.get('longName', '').upper()
             if 'DEPOSITARY RECEIPT' in long_name:
                 return None
@@ -163,11 +195,12 @@ class GlobalFundamentalPipeline:
 
     def run_acquisition(self, market_label='US'):
         self.raw_data = [] 
-        for i in range(0, len(self.tickers), self.batch_size):
+        total = len(self.tickers)
+        for i in range(0, total, self.batch_size):
             batch = self.tickers[i:i + self.batch_size]
             with ThreadPoolExecutor(max_workers=2) as exec:
                 self.raw_data.extend([r for r in exec.map(self._fetch_single_ticker, batch) if r])
-            logger.info(f"Acquired {len(self.raw_data)} tickers in {market_label}...")
+            logger.info(f"Progress: {len(self.raw_data)}/{total} captured for {market_label}...")
             time.sleep(self.delay)
             
         filename = f"market_{market_label}_{datetime.now().strftime('%Y-%m-%d')}.json"
@@ -184,7 +217,7 @@ if __name__ == "__main__":
     if pipeline.tickers:
         pipeline.run_acquisition(market_label='SET')
     
-    # Run US
+    # Run US (Full Market)
     pipeline.discover_tickers(market='US')
     if pipeline.tickers:
         pipeline.run_acquisition(market_label='US')
