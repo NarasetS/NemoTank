@@ -8,7 +8,7 @@ st.set_page_config(page_title="Nemo Tank", layout="wide")
 st.title("🐠 Nemo Tank: Global Quant Terminal")
 
 # --- MARKET SWITCHER ---
-market_selection = st.sidebar.radio("Select Market Territory", ["US (Broad Market)", "Thailand (SET 100)"])
+market_selection = st.sidebar.radio("Select Market Territory", ["US (Broad Market)", "Thailand (SET Universe)"])
 market_key = "US" if "US" in market_selection else "SET"
 
 engine = IntelligenceEngine()
@@ -34,8 +34,20 @@ else:
         (master_df['market_cap'] >= min_mcap * 1_000_000)
     ]
     
+    # --- INFO SIDEBAR ---
     st.sidebar.divider()
-    st.sidebar.success(f"Market: {market_key} | {len(working_df)} Stocks Active")
+    
+    # Extract Scan Date
+    scan_date = "Unknown"
+    if 'scan_date' in master_df.columns:
+        try:
+            # Get the latest date in the dataset
+            scan_date = pd.to_datetime(master_df['scan_date']).max().strftime('%Y-%m-%d %H:%M')
+        except:
+            scan_date = str(master_df['scan_date'].iloc[0])
+
+    st.sidebar.success(f"Market: {market_key}")
+    st.sidebar.info(f"📊 Stocks Active: {len(working_df)}\n\n📅 Data Date: {scan_date}")
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🦈 Shark Tank",
