@@ -60,7 +60,7 @@ else:
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🔎 Ticker Deep Dive",
-        "🦈 Shark Tank",
+        "🦈 Nemo Tank",
         "✨ Magic Formula", 
         "🏰 Buffett Quality", 
         "🚀 Lynch Growth", 
