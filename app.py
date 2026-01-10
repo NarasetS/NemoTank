@@ -3,13 +3,33 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from analysis_engine import IntelligenceEngine
 
-st.set_page_config(page_title="Nemo Tank", layout="wide")
+# --- APP CONFIGURATION & THEME ---
+st.set_page_config(
+    page_title="Nemo Tank", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for Dark Mode / High Contrast
+st.markdown("""
+    <style>
+        .stApp { background-color: #0E1117; color: #FAFAFA; }
+        div[data-testid="stMetricValue"] { font-size: 24px; color: #00CC96; }
+        h1, h2, h3 { color: #FAFAFA !important; }
+        section[data-testid="stSidebar"] { background-color: #262730; }
+        th { background-color: #262730 !important; color: #FAFAFA !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+pio.templates.default = "plotly_dark"
+
 st.title("🐠 Nemo Tank: Global Quant Terminal")
 
 # --- MARKET SWITCHER ---
-market_selection = st.sidebar.radio("Select Market Territory", ["US (Broad Market)", "Thailand (SET Universe)"])
+market_selection = st.sidebar.radio("Select Market Territory", ["US Market", "Thailand (SET)"])
 market_key = "US" if "US" in market_selection else "SET"
 
 engine = IntelligenceEngine()
@@ -19,48 +39,82 @@ if master_df.empty:
     st.error(f"No {market_key} data found. Please run the Stock Data Pipeline first.")
 else:
     # --- GLOBAL FILTERS ---
-    st.sidebar.header("🎯 Global Filters")
-    all_sectors = sorted(master_df['sector'].dropna().unique().tolist())
+    st.sidebar.header("🎯 Universe Filters")
+    
+    # 1. US Specific Sub-Filters (Index/Exchange)
+    working_df = master_df.copy()
+    
+    if market_key == "US":
+        st.sidebar.subheader("US Market Scope")
+        us_scope = st.sidebar.selectbox(
+            "Index / Filter", 
+            ["Broad Market (All)", "S&P 500", "NASDAQ 100", "NYSE Listed", "NASDAQ Listed"]
+        )
+        
+        # Apply Index Logic
+        if us_scope == "S&P 500":
+            if 'is_sp500' in working_df.columns:
+                working_df = working_df[working_df['is_sp500'] == True]
+            else:
+                st.sidebar.warning("S&P 500 tags not found in data. Re-run pipeline.")
+                
+        elif us_scope == "NASDAQ 100":
+            if 'is_nasdaq100' in working_df.columns:
+                working_df = working_df[working_df['is_nasdaq100'] == True]
+            else:
+                st.sidebar.warning("Nasdaq 100 tags not found.")
+                
+        elif us_scope == "NYSE Listed":
+            working_df = working_df[working_df['exchange'].isin(['NYQ', 'NYSE'])]
+            
+        elif us_scope == "NASDAQ Listed":
+            working_df = working_df[working_df['exchange'].isin(['NMS', 'NGM', 'NCM', 'NASDAQ'])]
+
+    # 2. Sector Filter
+    all_sectors = sorted(working_df['sector'].dropna().unique().tolist())
     selected_sectors = st.sidebar.multiselect("Sectors", all_sectors, default=all_sectors)
     
-    st.sidebar.subheader("Liquidity & Size")
-    min_mcap = st.sidebar.slider("Min Market Value (Millions)", 0, 2000, 50, help="Filters out micro-cap stocks to ensure liquidity.")
+    # 3. Industry Filter
+    sector_subset = working_df[working_df['sector'].isin(selected_sectors)]
+    all_industries = sorted(sector_subset['industry'].dropna().unique().tolist())
+    selected_industries = st.sidebar.multiselect("Industries (Empty = All)", all_industries, default=[])
+    filter_industries = selected_industries if selected_industries else all_industries
     
-    # Ensure market_cap exists
-    if 'market_cap' not in master_df.columns:
-        master_df['market_cap'] = master_df.get('enterprise_value', 0)
+    # 4. Size Filter
+    st.sidebar.subheader("Liquidity & Size")
+    min_mcap = st.sidebar.number_input("Min Market Value (Millions)", min_value=0, value=50, step=50)
+    
+    if 'market_cap' not in working_df.columns:
+        working_df['market_cap'] = working_df.get('enterprise_value', 0)
 
-    working_df = master_df[
-        (master_df['sector'].isin(selected_sectors)) & 
-        (master_df['market_cap'] >= min_mcap * 1_000_000)
+    # --- APPLY FINAL FILTERS ---
+    working_df = working_df[
+        (working_df['sector'].isin(selected_sectors)) & 
+        (working_df['industry'].isin(filter_industries)) &
+        (working_df['market_cap'] >= min_mcap * 1_000_000)
     ]
     
     # --- INFO SIDEBAR ---
     st.sidebar.divider()
-    
-    # Extract Scan Date
     scan_date = "Unknown"
     if 'scan_date' in master_df.columns:
-        try:
-            scan_date = pd.to_datetime(master_df['scan_date']).max().strftime('%Y-%m-%d %H:%M')
-        except:
-            scan_date = str(master_df['scan_date'].iloc[0])
+        try: scan_date = pd.to_datetime(master_df['scan_date']).max().strftime('%Y-%m-%d %H:%M')
+        except: scan_date = str(master_df['scan_date'].iloc[0])
 
-    st.sidebar.success(f"Market: {market_key}")
-    st.sidebar.info(f"📊 Stocks Active: {len(working_df)}\n\n📅 Data Date: {scan_date}")
+    st.sidebar.success(f"Active Universe: {len(working_df)} Stocks")
+    st.sidebar.caption(f"Data Date: {scan_date}")
 
-    # Define standard numeric columns for axis selection
+    # Numeric columns for axes
     numeric_cols = [
         'forward_pe', 'peg_ratio', 'earnings_yield', 'conventional_roic', 'greenblatt_roc',
         'revenue_growth', 'gross_margins', 'return_on_equity', 'debt_ebitda', 
         'accruals_ratio', 'unified_alpha', 'market_cap'
     ]
-    # Filter to only cols present in df
     numeric_cols = [c for c in numeric_cols if c in working_df.columns]
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🔎 Ticker Deep Dive",
-        "🦈 Nemo Tank",
+        "🦈 Shark Tank",
         "✨ Magic Formula", 
         "🏰 Buffett Quality", 
         "🚀 Lynch Growth", 
@@ -73,14 +127,12 @@ else:
         st.header("🔎 Single Ticker Investigation")
         st.markdown("Select a stock to run a full **360° Forensic Audit** against all our quantitative models.")
         
-        # Ticker Selector
         ticker_list = sorted(working_df['ticker'].unique().tolist())
-        selected_ticker = st.selectbox("Select Ticker to Investigate", ticker_list)
+        selected_ticker = st.selectbox("Select Ticker", ticker_list)
         
         if selected_ticker:
             stock = working_df[working_df['ticker'] == selected_ticker].iloc[0]
             
-            # --- 1. VITAL SIGNS ---
             st.subheader(f"1. Vital Signs: {selected_ticker} ({stock['sector']})")
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Forward P/E", f"{stock.get('forward_pe', 0):.2f}x")
@@ -90,14 +142,11 @@ else:
             c5.metric("Unified Alpha", f"{stock.get('unified_alpha', 0):.2f}")
 
             st.divider()
-
-            # --- 2. THE SCORECARD ---
             st.subheader("2. Model Scorecard")
             col_score1, col_score2 = st.columns([1, 1.5])
             
             with col_score1:
-                # -- GREENBLATT CALCULATION (Relative Rank) --
-                # Calculate ranks dynamically for the current universe to see where this stock sits
+                # Greenblatt Rank Logic
                 gb_df = working_df[working_df['earnings_yield'] > 0].copy()
                 if not gb_df.empty:
                     gb_df['yield_rank'] = gb_df['earnings_yield'].rank(ascending=False)
@@ -108,296 +157,170 @@ else:
                     if selected_ticker in gb_df['ticker'].values:
                         s_gb = gb_df[gb_df['ticker'] == selected_ticker].iloc[0]
                         rank_val = int(s_gb['final_rank'])
-                        total_count = len(gb_df)
-                        # Logic: Top 20% is "Magic", Top 50% is "Average", Bottom is "Poor"
-                        if rank_val <= total_count * 0.2: gb_status = "✅ TOP 20%"
-                        elif rank_val <= total_count * 0.5: gb_status = "⚠️ AVERAGE"
+                        total = len(gb_df)
+                        if rank_val <= total * 0.2: gb_status = "✅ TOP 20%"
+                        elif rank_val <= total * 0.5: gb_status = "⚠️ AVERAGE"
                         else: gb_status = "❌ BOTTOM 50%"
-                        
                         st.write(f"**✨ Magic Formula:** {gb_status}")
-                        st.caption(f"Rank: #{rank_val}/{total_count} | Yield: {s_gb['earnings_yield']:.1f}% | ROC: {s_gb['greenblatt_roc']:.1f}%")
+                        st.caption(f"Rank: #{rank_val}/{total}")
                     else:
-                        st.write("**✨ Magic Formula:** ❌ N/A")
-                        st.caption("Excluded (Negative Yield)")
-                else:
-                    st.write("**✨ Magic Formula:** ❌ No Data")
-
-                # -- BUFFETT CHECK --
+                        st.write("**✨ Magic Formula:** ❌ N/A (Neg Yield)")
+                
+                # Logic Checks
                 buffett_pass = (stock.get('conventional_roic', 0) > 15) and (stock.get('debt_ebitda', 10) < 2.5)
-                buffett_icon = "✅ PASS" if buffett_pass else "❌ FAIL"
-                st.write(f"**🏰 Buffett Quality:** {buffett_icon}")
-                st.caption(f"ROIC: {stock.get('conventional_roic', 0):.1f}% (Target >15) | Debt: {stock.get('debt_ebitda', 0):.1f}x (Target <2.5)")
-                
-                # -- LYNCH CHECK --
                 peg = stock.get('peg_ratio', 10)
-                if peg < 1.0 and peg > 0: lynch_status = "✅ BUY ZONE"
-                elif peg < 2.0: lynch_status = "⚠️ HOLD/FAIR"
-                else: lynch_status = "❌ OVERVALUED"
-                st.write(f"**🚀 Lynch Growth:** {lynch_status}")
-                st.caption(f"PEG Ratio: {peg:.2f} (Target < 1.0)")
-                
-                # -- SHARK CHECK --
                 shark_pass = (stock.get('revenue_growth', 0) > 15) and (stock.get('gross_margins', 0) > 30)
-                shark_icon = "✅ DEAL" if shark_pass else "❌ NO DEAL"
-                st.write(f"**🦈 Shark Tank:** {shark_icon}")
-                st.caption(f"Growth: {stock.get('revenue_growth', 0):.1f}% | Margins: {stock.get('gross_margins', 0):.1f}%")
+
+                st.write(f"**🏰 Buffett Quality:** {'✅ PASS' if buffett_pass else '❌ FAIL'}")
+                st.caption(f"ROIC: {stock.get('conventional_roic',0):.1f}% | Debt: {stock.get('debt_ebitda',0):.1f}x")
+                
+                st.write(f"**🚀 Lynch Growth:** {'✅ BUY' if peg < 1.0 and peg > 0 else '⚠️ HOLD/SELL'}")
+                st.caption(f"PEG Ratio: {peg:.2f}")
+                
+                st.write(f"**🦈 Shark Tank:** {'✅ DEAL' if shark_pass else '❌ NO DEAL'}")
+                st.caption(f"Growth: {stock.get('revenue_growth',0):.1f}% | Margin: {stock.get('gross_margins',0):.1f}%")
 
             with col_score2:
-                # --- 3. RADAR CHART (Percentile Rank within Selected Sector) ---
+                # Radar Chart
                 subset = working_df.copy()
                 pct_rank = {}
                 metrics_map = {
                     'Value (Yield)': 'earnings_yield',
                     'Quality (ROIC)': 'conventional_roic',
                     'Growth (Rev)': 'revenue_growth',
-                    'Safety (Debt)': 'debt_ebitda', # Lower is better, need to invert
-                    'Efficiency (PEG)': 'peg_ratio' # Lower is better, need to invert
+                    'Safety (Debt)': 'debt_ebitda',
+                    'Efficiency (PEG)': 'peg_ratio'
                 }
-                
                 for label, key in metrics_map.items():
                     if key in subset.columns:
-                        # Rank pct=True gives 0 to 1
-                        if key in ['debt_ebitda', 'peg_ratio']:
-                            # For Debt and PEG, Lower is Better, so we invert the rank
-                            subset[f'{key}_rank'] = subset[key].rank(ascending=False, pct=True)
-                        else:
-                            subset[f'{key}_rank'] = subset[key].rank(ascending=True, pct=True)
-                        
-                        # Get value for selected stock
+                        ascending = True if key not in ['debt_ebitda', 'peg_ratio'] else False
+                        subset[f'{key}_rank'] = subset[key].rank(ascending=ascending, pct=True)
                         val = subset[subset['ticker'] == selected_ticker][f'{key}_rank'].iloc[0]
-                        pct_rank[label] = val * 100 # Convert to 0-100 score
+                        pct_rank[label] = val * 100
                 
-                # Plot Radar
-                categories = list(pct_rank.keys())
-                values = list(pct_rank.values())
-                
-                fig_radar = go.Figure()
-                fig_radar.add_trace(go.Scatterpolar(
-                    r=values,
-                    theta=categories,
-                    fill='toself',
-                    name=selected_ticker
-                ))
-                fig_radar.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                    showlegend=False,
-                    title=f"Relative Strength (vs Selected Universe)",
-                    height=350,
-                    margin=dict(t=30, b=30, l=40, r=40)
-                )
+                fig_radar = go.Figure(go.Scatterpolar(r=list(pct_rank.values()), theta=list(pct_rank.keys()), fill='toself', name=selected_ticker))
+                fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, title="Percentile Rank vs Peers", height=350, margin=dict(t=30, b=30, l=40, r=40))
                 st.plotly_chart(fig_radar, width="stretch")
-                st.caption("*Chart shows percentile rank (0-100) vs peers. Wider area = Better.*")
 
     with tab2:
         st.header(f"Shark Tank Deals ({market_key})")
-        with st.expander("🦈 The Shark Philosophy (Hyper-Growth)", expanded=True):
-            st.markdown("""
-            **"I'm out if it doesn't scale."**
-            Sharks don't just want value; they want **Explosive Growth** and **Scalability**.
-            * **Revenue Growth:** Is the product flying off the shelves? (>15%)
-            * **Gross Margins:** Is the product profitable to make? (>30%)
-            * **ROE:** Are you efficient with equity? (>15%)
-            """)
+        with st.expander("🦈 Philosophy", expanded=True):
+            st.write("Explosive Growth + Scalability + Efficiency.")
         
-        col_shark, col_res = st.columns([1, 2])
-        with col_shark:
-            st.subheader("Deal Parameters")
+        c1, c2 = st.columns([1, 2])
+        with c1:
             min_growth = st.slider("Min Revenue Growth (%)", 0, 100, 15)
             min_margin = st.slider("Min Gross Margin (%)", 0, 80, 30)
             min_roe = st.slider("Min ROE (%)", 0, 50, 15)
-            
             sharks = engine.get_shark_tank_leads(working_df, min_growth, min_margin, min_roe)
             st.metric("Deals Found", len(sharks))
-        
-        with col_res:
+        with c2:
             if not sharks.empty:
-                st.subheader("Visual Analysis")
-                c1, c2, c3 = st.columns(3)
-                x_axis = c1.selectbox("X Axis", numeric_cols, index=numeric_cols.index('revenue_growth') if 'revenue_growth' in numeric_cols else 0, key='shark_x')
-                y_axis = c2.selectbox("Y Axis", numeric_cols, index=numeric_cols.index('gross_margins') if 'gross_margins' in numeric_cols else 0, key='shark_y')
-                size_axis = c3.selectbox("Size By", numeric_cols, index=numeric_cols.index('return_on_equity') if 'return_on_equity' in numeric_cols else 0, key='shark_size')
-
-                fig_shark = px.scatter(sharks, x=x_axis, y=y_axis, size=size_axis, 
-                                       color="sector", hover_data=['ticker'],
-                                       title=f"Shark Tank Matrix: {x_axis} vs {y_axis}")
-                st.plotly_chart(fig_shark, width="stretch")
+                cx, cy, cz = st.columns(3)
+                sx = cx.selectbox("X", numeric_cols, index=numeric_cols.index('revenue_growth') if 'revenue_growth' in numeric_cols else 0, key='sx')
+                sy = cy.selectbox("Y", numeric_cols, index=numeric_cols.index('gross_margins') if 'gross_margins' in numeric_cols else 0, key='sy')
+                ss = cz.selectbox("Size", numeric_cols, index=numeric_cols.index('return_on_equity') if 'return_on_equity' in numeric_cols else 0, key='ss')
                 
-                st.dataframe(sharks[['ticker', 'sector', 'revenue_growth', 'gross_margins', 'return_on_equity', 'forward_pe']])
+                fig = px.scatter(sharks, x=sx, y=sy, size=ss, color="sector", hover_data=['ticker'], title="Shark Tank Matrix")
+                st.plotly_chart(fig, width="stretch")
+                st.dataframe(sharks)
             else:
-                st.warning("No deals meet your Shark Tank criteria. Try lowering the thresholds.")
+                st.warning("No deals found.")
 
     with tab3:
         st.header(f"Greenblatt Magic Formula ({market_key})")
-        with st.expander("✨ Theory: Value + Quality", expanded=False):
-            st.markdown("""
-            **"Buy good companies at cheap prices."**
-            Joel Greenblatt's formula ranks stocks based on two metrics:
-            1.  **Earnings Yield (Value):** How cheap is the stock relative to its earnings?
-            2.  **Return on Capital (Quality):** How good is the company at investing its own money?
-            
-            **Normalized Score:** We've added a 0-100 score where 100 represents the 'Most Magic' stock (Best combined Rank).
-            """)
-            
-        limit = st.slider("Shortlist Limit", 5, 100, 20)
+        with st.expander("✨ Philosophy", expanded=False):
+            st.write("Good Companies (High ROIC) at Cheap Prices (High Yield).")
+        limit = st.slider("Limit", 5, 100, 20)
         ranked = engine.get_greenblatt_rank(working_df, limit=limit)
         
-        # --- NORMALIZED SCORING ADDITION ---
+        # Normalized Score
         if not ranked.empty:
-            max_score = ranked['magic_score'].max()
-            min_score = ranked['magic_score'].min()
-            if max_score != min_score:
-                ranked['magic_normalized'] = 100 - ((ranked['magic_score'] - min_score) / (max_score - min_score) * 100)
-            else:
-                ranked['magic_normalized'] = 100 
-        
-        st.subheader("Visual Frontier")
-        c1, c2 = st.columns(2)
-        gb_x = c1.selectbox("X Axis", numeric_cols, index=numeric_cols.index('earnings_yield') if 'earnings_yield' in numeric_cols else 0, key='gb_x')
-        gb_y = c2.selectbox("Y Axis", numeric_cols, index=numeric_cols.index('greenblatt_roc') if 'greenblatt_roc' in numeric_cols else 0, key='gb_y')
-
-        st.plotly_chart(px.scatter(ranked, x=gb_x, y=gb_y, text="ticker", color="magic_normalized", 
-                                   color_continuous_scale="Viridis",
-                                   title=f"Magic Formula: {gb_x} vs {gb_y} (Color=Normalized Score)"), width="stretch")
-        
-        st.subheader("The 'Magic' Shortlist")
-        st.dataframe(ranked[['ticker', 'earnings_yield', 'greenblatt_roc', 'magic_score', 'magic_normalized']].style.format({'magic_normalized': '{:.1f}'}))
+            mx, mn = ranked['magic_score'].max(), ranked['magic_score'].min()
+            ranked['magic_norm'] = 100 if mx == mn else 100 - ((ranked['magic_score'] - mn) / (mx - mn) * 100)
+            
+            c1, c2 = st.columns(2)
+            gx = c1.selectbox("X", numeric_cols, index=numeric_cols.index('earnings_yield') if 'earnings_yield' in numeric_cols else 0, key='gx')
+            gy = c2.selectbox("Y", numeric_cols, index=numeric_cols.index('greenblatt_roc') if 'greenblatt_roc' in numeric_cols else 0, key='gy')
+            
+            st.plotly_chart(px.scatter(ranked, x=gx, y=gy, text="ticker", color="magic_norm", color_continuous_scale="Viridis", title="Magic Frontier"), width="stretch")
+            st.dataframe(ranked)
 
     with tab4:
-        st.header(f"Buffett 'Wonderful Companies' ({market_key})")
-        with st.expander("🏰 Theory: Moats & Fortresses", expanded=False):
-            st.markdown("""
-            **"Time is the friend of the wonderful company."**
-            Warren Buffett looks for **Economic Moats** and **Financial Fortresses**.
-            """)
-            
-        roic_val = st.slider("Min ROIC (%)", 5, 40, 15)
+        st.header(f"Buffett Quality ({market_key})")
+        with st.expander("🏰 Philosophy", expanded=False):
+            st.write("Economic Moats (High ROIC) + Financial Safety (Low Debt).")
+        roic_val = st.slider("Min ROIC", 5, 40, 15)
         debt_val = st.slider("Max Debt/EBITDA", 0.5, 5.0, 2.5)
         buffett = engine.get_buffett_leads(working_df, roic_threshold=roic_val, debt_limit=debt_val)
         
         if not buffett.empty:
-            st.subheader("Leaderboard Analysis")
             c1, c2 = st.columns(2)
-            bf_y = c1.selectbox("Bar Height (Metric)", numeric_cols, index=numeric_cols.index('conventional_roic') if 'conventional_roic' in numeric_cols else 0, key='bf_y')
-            bf_c = c2.selectbox("Bar Color (Metric)", numeric_cols, index=numeric_cols.index('debt_ebitda') if 'debt_ebitda' in numeric_cols else 0, key='bf_c')
-            
-            st.plotly_chart(px.bar(buffett.head(15), x='ticker', y=bf_y, color=bf_c, title=f"Top Quality Leaders: {bf_y} colored by {bf_c}"), width="stretch")
-            st.dataframe(buffett[['ticker', 'conventional_roic', 'debt_ebitda', 'forward_pe']])
-        else:
-            st.warning("No companies match these strict criteria.")
+            by = c1.selectbox("Height", numeric_cols, index=numeric_cols.index('conventional_roic') if 'conventional_roic' in numeric_cols else 0, key='by')
+            bc = c2.selectbox("Color", numeric_cols, index=numeric_cols.index('debt_ebitda') if 'debt_ebitda' in numeric_cols else 0, key='bc')
+            st.plotly_chart(px.bar(buffett.head(20), x='ticker', y=by, color=bc, title="Quality Leaders"), width="stretch")
+            st.dataframe(buffett)
+        else: st.warning("No matches.")
 
     with tab5:
         st.header(f"Lynch Growth ({market_key})")
-        with st.expander("🚀 Theory: Growth at a Reasonable Price (GARP)", expanded=False):
-            st.markdown("""**"Stalwarts" vs "Fast Growers":** Target PEG < 1.0.""")
-            
-        lynch_df = working_df[(working_df['peg_ratio'] > 0) & (working_df['peg_ratio'] < 5)].sort_values('peg_ratio')
+        with st.expander("🚀 Philosophy", expanded=False):
+            st.write("Growth at a Reasonable Price (PEG < 1.0).")
+        lynch = working_df[(working_df['peg_ratio'] > 0) & (working_df['peg_ratio'] < 5)].sort_values('peg_ratio')
         
-        st.subheader("Growth Valuation Map")
         c1, c2 = st.columns(2)
-        l_x = c1.selectbox("X Axis", numeric_cols, index=numeric_cols.index('forward_pe') if 'forward_pe' in numeric_cols else 0, key='l_x')
-        l_y = c2.selectbox("Y Axis", numeric_cols, index=numeric_cols.index('peg_ratio') if 'peg_ratio' in numeric_cols else 0, key='l_y')
-
-        fig_lynch = px.scatter(lynch_df, x=l_x, y=l_y, text="ticker", color="conventional_roic")
-        if l_y == 'peg_ratio':
-            fig_lynch.add_hline(y=1.0, line_dash="dash", line_color="green", annotation_text="Fair Value (PEG=1)")
-        st.plotly_chart(fig_lynch, width="stretch")
-        st.dataframe(lynch_df[['ticker', 'peg_ratio', 'forward_pe', 'conventional_roic']].head(50))
+        lx = c1.selectbox("X", numeric_cols, index=numeric_cols.index('forward_pe') if 'forward_pe' in numeric_cols else 0, key='lx')
+        ly = c2.selectbox("Y", numeric_cols, index=numeric_cols.index('peg_ratio') if 'peg_ratio' in numeric_cols else 0, key='ly')
+        
+        fig = px.scatter(lynch, x=lx, y=ly, text="ticker", color="conventional_roic")
+        if ly == 'peg_ratio': fig.add_hline(y=1.0, line_dash="dash", line_color="green")
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(lynch.head(50))
 
     with tab6:
-        st.header("🏆 Unified Alpha Leaderboard")
-        with st.expander("🏆 Theory: Statistical Z-Scores", expanded=False):
-            st.markdown("**The 'Triple Crown' of Investing:** Combining Value, Quality, and Efficiency.")
-            
-        alpha_df = working_df.sort_values('unified_alpha', ascending=False).head(20)
-        
-        c1, c2 = st.columns(2)
-        a_y = c1.selectbox("Y Axis", numeric_cols, index=numeric_cols.index('unified_alpha') if 'unified_alpha' in numeric_cols else 0, key='a_y')
-        a_c = c2.selectbox("Color", numeric_cols, index=numeric_cols.index('unified_alpha') if 'unified_alpha' in numeric_cols else 0, key='a_c')
-
-        st.plotly_chart(px.bar(alpha_df, x='ticker', y=a_y, color=a_c, title="Ensemble Winners"), width="stretch")
-        st.dataframe(alpha_df[['ticker', 'unified_alpha', 'earnings_yield', 'conventional_roic', 'peg_ratio']])
+        st.header("🏆 Unified Alpha")
+        with st.expander("🏆 Philosophy", expanded=False):
+            st.write("Triple Crown: Z-Score average of Value, Quality, and Efficiency.")
+        alpha = working_df.sort_values('unified_alpha', ascending=False).head(20)
+        st.plotly_chart(px.bar(alpha, x='ticker', y='unified_alpha', color='unified_alpha', title="Ensemble Winners"), width="stretch")
+        st.dataframe(alpha)
 
     with tab7:
-        st.header("🤖 Multi-Factor ML Clusters")
-        with st.expander("🤖 Machine Learning Insights", expanded=False):
-            st.markdown("Groups stocks based on fundamental similarity.")
-            
-        feat_map = {
-            'P/E': 'forward_pe', 
-            'ROIC': 'conventional_roic', 
-            'Yield': 'earnings_yield', 
-            'Alpha': 'unified_alpha', 
-            'Growth': 'revenue_growth',
-            'Accruals Ratio': 'accruals_ratio' # Added per request
-        }
-        selected_feats = st.multiselect("Clustering Features", list(feat_map.keys()), default=['Alpha', 'P/E', 'ROIC'])
-        feat_keys = [feat_map[f] for f in selected_feats]
+        st.header("🤖 ML Clusters")
+        with st.expander("🤖 Philosophy", expanded=False):
+            st.write("K-Means grouping by fundamental similarity.")
         
-        if len(working_df) > 10 and len(feat_keys) >= 2:
-            st.subheader("1. Optimization: The Elbow Method")
+        feats = st.multiselect("Features", list(numeric_cols), default=['unified_alpha', 'forward_pe', 'conventional_roic'])
+        if len(working_df) > 10 and len(feats) >= 2:
+            st.subheader("1. Elbow Method")
+            base = working_df[feats].dropna()
+            kr, inert = engine.find_optimal_k(base)
+            st.plotly_chart(px.line(x=kr, y=inert, title="Elbow Curve"), width="stretch")
             
-            cluster_base = working_df[feat_keys].dropna()
-            k_range, inertias = engine.find_optimal_k(cluster_base)
+            k = st.slider("K Clusters", 2, 6, 4)
+            clustered = engine.perform_clustering(working_df, k=k, feature_list=feats)
             
-            fig_elbow = go.Figure(go.Scatter(x=k_range, y=inertias, mode='lines+markers'))
-            fig_elbow.update_layout(
-                xaxis_title="Number of Clusters (k)", 
-                yaxis_title="Inertia (Sum of Squared Distances)",
-                margin=dict(l=20, r=20, t=20, b=20),
-                height=300
-            )
-            st.plotly_chart(fig_elbow, width="stretch")
-
-            k = st.slider("Select K Clusters", 2, 6, 4)
-            clustered = engine.perform_clustering(working_df, k=k, feature_list=feat_keys)
-            
-            st.subheader("2. Segmentation Plot")
             c1, c2 = st.columns(2)
-            ml_x = c1.selectbox("X Axis", feat_keys, index=0, key='ml_x')
-            ml_y = c2.selectbox("Y Axis", feat_keys, index=1 if len(feat_keys)>1 else 0, key='ml_y')
+            mx = c1.selectbox("X", feats, index=0, key='mx')
+            my = c2.selectbox("Y", feats, index=1 if len(feats)>1 else 0, key='my')
+            st.plotly_chart(px.scatter(clustered, x=mx, y=my, color="cluster_id", hover_data=['ticker']), width="stretch")
             
-            st.plotly_chart(px.scatter(clustered, x=ml_x, y=ml_y, color="cluster_id", hover_data=['ticker']), width="stretch")
-            
-            # Automated Inference
-            st.subheader("3. Cluster Intelligence")
-            stats = clustered.groupby('cluster_id')[feat_keys].mean()
+            st.subheader("Cluster Intelligence")
+            stats = clustered.groupby('cluster_id')[feats].mean()
             cols = st.columns(k)
             for i in range(k):
                 with cols[i]:
-                    st.markdown(f"### Cluster {i}")
+                    st.markdown(f"**Cluster {i}**")
                     s = stats.loc[i]
-                    # Heuristic Labeling
-                    if s.get('unified_alpha', -1) > 0.5: label = "💎 Elite Tier"
-                    elif s.get('forward_pe', 50) < 15 and s.get('conventional_roic', 0) > 15: label = "💰 Value & Quality"
-                    elif s.get('revenue_growth', 0) > 20: label = "🚀 Hyper Growth"
-                    else: label = "😐 Neutral / Laggard"
-                    
-                    st.write(f"**{label}**")
-                    for f in feat_keys: st.write(f"{f}: {s[f]:.2f}")
-                    
-                    with st.expander("View Tickers"):
-                        tickers_in_cluster = clustered[clustered['cluster_id'] == i]['ticker'].tolist()
-                        st.write(", ".join(tickers_in_cluster))
+                    for f in feats: st.write(f"{f}: {s[f]:.2f}")
+                    with st.expander("Tickers"):
+                        st.write(", ".join(clustered[clustered['cluster_id']==i]['ticker'].tolist()))
 
     with tab8:
-        st.header("📊 Master Data Explorer")
-        st.markdown("""
-        **Full Custom Analysis:** Use the tools below to explore the entire dataset.
-        * **Visual Analysis:** Plot any two metrics against each other.
-        * **Raw Data:** Sort, filter, and inspect the raw numbers.
-        * **Earnings Quality:** Check the `accruals_ratio` column (lower is generally better, indicating cash-backed earnings).
-        """)
-        
-        # Visual Analysis Section for Explorer
-        st.subheader("Visual Analysis")
+        st.header("📊 Explorer")
         c1, c2, c3 = st.columns(3)
-        exp_x = c1.selectbox("X Axis", numeric_cols, index=numeric_cols.index('market_cap') if 'market_cap' in numeric_cols else 0, key='exp_x')
-        exp_y = c2.selectbox("Y Axis", numeric_cols, index=numeric_cols.index('forward_pe') if 'forward_pe' in numeric_cols else 0, key='exp_y')
-        exp_c = c3.selectbox("Color By", numeric_cols, index=numeric_cols.index('accruals_ratio') if 'accruals_ratio' in numeric_cols else 0, key='exp_c')
-        
-        fig_explorer = px.scatter(working_df, x=exp_x, y=exp_y, color=exp_c, hover_data=['ticker', 'sector'], 
-                                  title=f"Custom Plot: {exp_x} vs {exp_y}")
-        st.plotly_chart(fig_explorer, width="stretch")
-
-        st.subheader("Raw Data Table")
+        ex = c1.selectbox("X", numeric_cols, index=numeric_cols.index('market_cap') if 'market_cap' in numeric_cols else 0, key='ex')
+        ey = c2.selectbox("Y", numeric_cols, index=numeric_cols.index('forward_pe') if 'forward_pe' in numeric_cols else 0, key='ey')
+        ec = c3.selectbox("Color", numeric_cols, index=numeric_cols.index('accruals_ratio') if 'accruals_ratio' in numeric_cols else 0, key='ec')
+        st.plotly_chart(px.scatter(working_df, x=ex, y=ey, color=ec, hover_data=['ticker']), width="stretch")
         st.dataframe(working_df)
