@@ -74,14 +74,12 @@ class IntelligenceEngine:
         df['peg_ratio'] = df['forward_pe'] / df['conventional_roic'].replace(0, np.nan)
         
         # Convert Shark Metrics to Percentage if they look like ratios (e.g. 0.15 -> 15.0)
-        # We use median to avoid outliers (like one stock with 1000% growth) preventing scaling
+        # Assuming if max value is <= 5.0, it needs scaling. Safe assumption for growth/margins.
         shark_cols = ['revenue_growth', 'gross_margins', 'operating_margins', 'return_on_equity']
         for col in shark_cols:
-            if col in df.columns:
-                # Check median value. If median is small (e.g. < 5), it's likely a ratio (0.20) not percentage (20.0)
-                # We use abs() because growth/ROE can be negative
-                if df[col].abs().median() < 5.0: 
-                     df[col] = df[col] * 100
+            # Check max value to decide if scaling is needed (using abs max to handle negative growth)
+            if df[col].abs().max() <= 5.0: 
+                 df[col] = df[col] * 100
         
         # Fill NaNs in derived columns with 0 for ranking safety
         derived_cols = ['greenblatt_roc', 'conventional_roic', 'earnings_yield', 

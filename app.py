@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 from analysis_engine import IntelligenceEngine
+from backtest_engine import BacktestEngine
 
 # --- APP CONFIGURATION & THEME ---
 st.set_page_config(
@@ -38,6 +39,24 @@ master_df = engine.load_market_data(market=market_key)
 if master_df.empty:
     st.error(f"No {market_key} data found. Please run the Stock Data Pipeline first.")
 else:
+    # --- DATA NORMALIZATION (Ratio to Percentage Fix) ---
+    # Heuristic: If the median of a column is < 2.0 (e.g. 0.15), it's likely a ratio (15%). 
+    # If it's > 2.0 (e.g. 15.0), it's likely already a percentage.
+    # We convert all to 0-100 scale to match the sliders.
+    pct_cols_to_check = [
+        'revenue_growth', 'gross_margins', 'return_on_equity', 
+        'operating_margins', 'conventional_roic', 'greenblatt_roc', 'earnings_yield'
+    ]
+    
+    for col in pct_cols_to_check:
+        if col in master_df.columns:
+            # Drop 0s for median check to avoid skewing from missing data
+            non_zero_median = master_df[master_df[col] != 0][col].abs().median()
+            
+            # If median is small (e.g., 0.30 for 30%), multiply by 100
+            if pd.notna(non_zero_median) and non_zero_median < 5.0:
+                master_df[col] = master_df[col] * 100
+
     # --- GLOBAL FILTERS ---
     st.sidebar.header("🎯 Universe Filters")
     
@@ -51,18 +70,15 @@ else:
             ["Broad Market (All)", "S&P 500", "NASDAQ 100", "NYSE Listed", "NASDAQ Listed"]
         )
         
-        # Apply Index Logic
         if us_scope == "S&P 500":
             if 'is_sp500' in working_df.columns:
                 working_df = working_df[working_df['is_sp500'] == True]
             else:
-                st.sidebar.warning("S&P 500 tags not found in data. Re-run pipeline.")
+                st.sidebar.warning("S&P 500 tags not found in data.")
                 
         elif us_scope == "NASDAQ 100":
             if 'is_nasdaq100' in working_df.columns:
                 working_df = working_df[working_df['is_nasdaq100'] == True]
-            else:
-                st.sidebar.warning("Nasdaq 100 tags not found.")
                 
         elif us_scope == "NYSE Listed":
             working_df = working_df[working_df['exchange'].isin(['NYQ', 'NYSE'])]
@@ -112,17 +128,19 @@ else:
     ]
     numeric_cols = [c for c in numeric_cols if c in working_df.columns]
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🔎 Ticker Deep Dive",
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "🔎 Deep Dive",
         "🦈 Shark Tank",
         "✨ Magic Formula", 
         "🏰 Buffett Quality", 
         "🚀 Lynch Growth", 
         "🏆 Unified Alpha", 
         "🤖 ML Clusters",
-        "📊 Explorer"
+        "📊 Explorer",
+        "📈 Backtest"
     ])
 
+    # --- TAB 1: DEEP DIVE ---
     with tab1:
         st.header("🔎 Single Ticker Investigation")
         st.markdown("Select a stock to run a full **360° Forensic Audit** against all our quantitative models.")
@@ -202,6 +220,7 @@ else:
                 fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), showlegend=False, title="Percentile Rank vs Peers", height=350, margin=dict(t=30, b=30, l=40, r=40))
                 st.plotly_chart(fig_radar, width="stretch")
 
+    # --- TAB 2: SHARK TANK ---
     with tab2:
         st.header(f"Shark Tank Deals ({market_key})")
         with st.expander("🦈 Philosophy", expanded=True):
@@ -210,7 +229,8 @@ else:
         c1, c2 = st.columns([1, 2])
         with c1:
             min_growth = st.slider("Min Revenue Growth (%)", 0, 100, 15)
-            min_margin = st.slider("Min Gross Margin (%)", 0, 80, 30)
+            # Expanded range to 100 to allow filtering for high-margin SaaS/Tech
+            min_margin = st.slider("Min Gross Margin (%)", 0, 100, 30)
             min_roe = st.slider("Min ROE (%)", 0, 50, 15)
             sharks = engine.get_shark_tank_leads(working_df, min_growth, min_margin, min_roe)
             st.metric("Deals Found", len(sharks))
@@ -227,6 +247,7 @@ else:
             else:
                 st.warning("No deals found.")
 
+    # --- TAB 3: MAGIC FORMULA ---
     with tab3:
         st.header(f"Greenblatt Magic Formula ({market_key})")
         with st.expander("✨ Philosophy", expanded=False):
@@ -234,7 +255,6 @@ else:
         limit = st.slider("Limit", 5, 100, 20)
         ranked = engine.get_greenblatt_rank(working_df, limit=limit)
         
-        # Normalized Score
         if not ranked.empty:
             mx, mn = ranked['magic_score'].max(), ranked['magic_score'].min()
             ranked['magic_norm'] = 100 if mx == mn else 100 - ((ranked['magic_score'] - mn) / (mx - mn) * 100)
@@ -246,6 +266,7 @@ else:
             st.plotly_chart(px.scatter(ranked, x=gx, y=gy, text="ticker", color="magic_norm", color_continuous_scale="Viridis", title="Magic Frontier"), width="stretch")
             st.dataframe(ranked)
 
+    # --- TAB 4: BUFFETT ---
     with tab4:
         st.header(f"Buffett Quality ({market_key})")
         with st.expander("🏰 Philosophy", expanded=False):
@@ -262,6 +283,7 @@ else:
             st.dataframe(buffett)
         else: st.warning("No matches.")
 
+    # --- TAB 5: LYNCH ---
     with tab5:
         st.header(f"Lynch Growth ({market_key})")
         with st.expander("🚀 Philosophy", expanded=False):
@@ -277,6 +299,7 @@ else:
         st.plotly_chart(fig, width="stretch")
         st.dataframe(lynch.head(50))
 
+    # --- TAB 6: UNIFIED ALPHA ---
     with tab6:
         st.header("🏆 Unified Alpha")
         with st.expander("🏆 Philosophy", expanded=False):
@@ -285,6 +308,7 @@ else:
         st.plotly_chart(px.bar(alpha, x='ticker', y='unified_alpha', color='unified_alpha', title="Ensemble Winners"), width="stretch")
         st.dataframe(alpha)
 
+    # --- TAB 7: ML CLUSTERS ---
     with tab7:
         st.header("🤖 ML Clusters")
         with st.expander("🤖 Philosophy", expanded=False):
@@ -316,6 +340,7 @@ else:
                     with st.expander("Tickers"):
                         st.write(", ".join(clustered[clustered['cluster_id']==i]['ticker'].tolist()))
 
+    # --- TAB 8: EXPLORER ---
     with tab8:
         st.header("📊 Explorer")
         c1, c2, c3 = st.columns(3)
@@ -324,3 +349,85 @@ else:
         ec = c3.selectbox("Color", numeric_cols, index=numeric_cols.index('accruals_ratio') if 'accruals_ratio' in numeric_cols else 0, key='ec')
         st.plotly_chart(px.scatter(working_df, x=ex, y=ey, color=ec, hover_data=['ticker']), width="stretch")
         st.dataframe(working_df)
+
+    # --- TAB 9: BACKTEST ---
+    with tab9:
+        st.header("📈 Portfolio Simulation")
+        st.markdown("""
+        **"Price-Action Backtest"**: This module takes your current fundamental picks and simulates 
+        how an **Equal-Weighted Portfolio** of these stocks would have performed over the last 3 years.
+        
+        *Benchmarks: S&P 500 (US) or SET Index (Thailand)*
+        """)
+        
+        col_sel, col_sim = st.columns([1, 2])
+        
+        with col_sel:
+            st.subheader("1. Build Portfolio")
+            # User picks a strategy source
+            strategy_source = st.selectbox("Import Tickers From:", 
+                ["Manual Selection", "Top 20 Unified Alpha", "Top 20 Magic Formula", "Top 20 Shark Tank"])
+            
+            tickers_to_test = []
+            
+            if strategy_source == "Manual Selection":
+                tickers_to_test = st.multiselect("Select Stocks", working_df['ticker'].unique().tolist())
+            elif strategy_source == "Top 20 Unified Alpha":
+                tickers_to_test = working_df.sort_values('unified_alpha', ascending=False).head(20)['ticker'].tolist()
+            elif strategy_source == "Top 20 Magic Formula":
+                ranked = engine.get_greenblatt_rank(working_df, limit=20)
+                tickers_to_test = ranked['ticker'].tolist()
+            elif strategy_source == "Top 20 Shark Tank":
+                sharks = engine.get_shark_tank_leads(working_df)
+                tickers_to_test = sharks.head(20)['ticker'].tolist()
+                
+            st.write(f"**Selected ({len(tickers_to_test)}):**")
+            st.code(", ".join(tickers_to_test))
+            
+            if len(tickers_to_test) > 0:
+                run_bt = st.button("🚀 Run Backtest")
+            else:
+                st.warning("Select at least 1 stock.")
+                run_bt = False
+
+        with col_sim:
+            if run_bt:
+                bt_engine = BacktestEngine()
+                benchmark = '^GSPC' if market_key == 'US' else '^SET.BK'
+                
+                with st.spinner("Fetching historical prices..."):
+                    prices, bench_price = bt_engine.fetch_price_history(tickers_to_test, benchmark_ticker=benchmark)
+                
+                if not prices.empty:
+                    # Run Portfolio Sim
+                    port_res = bt_engine.run_simulation(prices)
+                    
+                    # Run Benchmark Sim (Treat as single stock portfolio)
+                    bench_res = None
+                    if not bench_price.empty:
+                        # Normalize benchmark to same start date
+                        bench_curve = bench_price / bench_price.iloc[0] * 100
+                    
+                    # --- PLOT ---
+                    fig_bt = go.Figure()
+                    # Portfolio Line
+                    fig_bt.add_trace(go.Scatter(x=port_res['curve'].index, y=port_res['curve'], name='Your Portfolio', line=dict(color='#00CC96', width=3)))
+                    # Benchmark Line
+                    if not bench_price.empty:
+                        fig_bt.add_trace(go.Scatter(x=bench_curve.index, y=bench_curve, name='Benchmark (Index)', line=dict(color='white', width=2, dash='dot')))
+                    
+                    fig_bt.update_layout(title="Historical Performance (Rebased to 100)", xaxis_title="Date", yaxis_title="Value ($100 invested)")
+                    st.plotly_chart(fig_bt, width="stretch")
+                    
+                    # --- STATS ROW ---
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Total Return", f"{port_res['total_return']*100:.1f}%")
+                    c2.metric("CAGR (Annual)", f"{port_res['cagr']*100:.1f}%")
+                    c3.metric("Max Drawdown", f"{port_res['max_drawdown']*100:.1f}%")
+                    c4.metric("Sharpe Ratio", f"{port_res['sharpe_ratio']:.2f}")
+                    
+                    # --- INDIVIDUAL CONTRIBUTORS ---
+                    with st.expander("View Individual Stock Performance"):
+                        st.dataframe(port_res['individual_normalized'].iloc[[-1]].T.sort_values(port_res['individual_normalized'].index[-1], ascending=False))
+                else:
+                    st.error("Could not fetch price data. Tickers might be delisted or invalid.")
