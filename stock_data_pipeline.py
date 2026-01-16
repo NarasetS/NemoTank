@@ -188,7 +188,13 @@ class GlobalFundamentalPipeline:
 
 if __name__ == "__main__":
     pipeline = GlobalFundamentalPipeline()
+    #
+    pipeline.discover_tickers(market='SET')
+    if pipeline.tickers:
+        pipeline.run_acquisition(market_label='SET')
+
     # Run US (Full Market with Tagging)
     pipeline.discover_tickers(market='US')
     if pipeline.tickers:
         pipeline.run_acquisition(market_label='US')
+
